@@ -12,6 +12,13 @@ const io = new Server(server, {
 
 app.use(express.static(path.join(__dirname, 'public')));
 
+//app.use(express.static(path.join(__dirname, 'public')));
+
+// ADD THIS ↓
+app.get('/', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
+
 // --- State ---
 let waitingQueue = [];         // array of socket ids
 let rooms = {};                // roomId -> { players: [id1, id2], chess: { active: false } }
