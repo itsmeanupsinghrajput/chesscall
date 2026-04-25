@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ChessCall — Play While You Talk</title>
+
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Karla:wght@300;400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" />
+
+  <!-- Chess.js -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.10.3/chess.min.js"></script>
+  <!-- Chessboard.js -->
+  <link rel="stylesheet" href="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.css" />
+  <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+  <script src="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.js"></script>
+  <!-- Socket.io -->
+  <script src="/socket.io/socket.io.js"></script>
+
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <!-- ═══════════════ LANDING SCREEN ═══════════════ -->
+  <div id="screen-landing" class="screen active">
+    <div class="landing-bg">
+      <div class="grid-overlay"></div>
+      <div class="glow-orb orb-1"></div>
+      <div class="glow-orb orb-2"></div>
+    </div>
+    <div class="landing-content">
+      <div class="logo-wrap">
+        <div class="logo-icon">♟</div>
+        <h1 class="logo-text">Chess<span>Call</span></h1>
+      </div>
+      <p class="tagline">Random video calls.<br/>Challange a stranger to chess.</p>
+
+      <div class="permission-warning" id="perm-warning" style="display:none;">
+        <span class="warn-icon">⚠</span>
+        <span>Camera &amp; microphone access required</span>
+      </div>
+
+      <button class="btn-start" id="btn-start" onclick="startApp()">
+        <span class="btn-text">Start Talking</span>
+        <span class="btn-glow"></span>
+      </button>
+
+      <div class="landing-meta">
+        <span>🌍 Worldwide</span>
+        <span>·</span>
+        <span>No signup</span>
+        <span>·</span>
+        <span>Totally free</span>
+      </div>
+    </div>
+
+    <!-- Floating chess pieces -->
+    <div class="float-piece p1">♜</div>
+    <div class="float-piece p2">♞</div>
+    <div class="float-piece p3">♝</div>
+    <div class="float-piece p4">♛</div>
+    <div class="float-piece p5">♚</div>
+    <div class="float-piece p6">♟</div>
+  </div>
+
+  <!-- ═══════════════ MAIN CALL SCREEN ═══════════════ -->
+  <div id="screen-call" class="screen">
+    <!-- Top Bar -->
+    <header class="topbar">
+      <div class="topbar-logo">♟ ChessCall</div>
+      <div class="topbar-status">
+        <div class="status-dot" id="status-dot"></div>
+        <span id="status-text">Connecting...</span>
+      </div>
+      <div class="topbar-actions">
+        <button class="btn-icon" id="btn-mic" onclick="toggleMic()" title="Toggle mic">🎤</button>
+        <button class="btn-icon" id="btn-cam" onclick="toggleCam()" title="Toggle camera">📷</button>
+      </div>
+    </header>
+
+    <!-- Main Layout -->
+    <main class="call-layout" id="call-layout">
+
+      <!-- Video Area -->
+      <section class="video-section" id="video-section">
+        <div class="video-stage">
+          <!-- Remote -->
+          <div class="video-box remote-box" id="remote-box">
+            <video id="remote-video" autoplay playsinline></video>
+            <div class="video-label">Stranger</div>
+            <div class="waiting-overlay" id="waiting-overlay">
+              <div class="spinner"></div>
+              <p id="waiting-msg">Looking for someone...</p>
+            </div>
+          </div>
+          <!-- Local -->
+          <div class="video-box local-box" id="local-box">
+            <video id="local-video" autoplay playsinline muted></video>
+            <div class="video-label">You</div>
+          </div>
+        </div>
+
+        <!-- Controls -->
+        <div class="controls-bar">
+          <button class="ctrl-btn btn-next" id="btn-next" onclick="skipStranger()">
+            ⏭ Next
+          </button>
+          <button class="ctrl-btn btn-chess" id="btn-chess" onclick="inviteToChess()" disabled>
+            ♟ Play Chess
+          </button>
+          <button class="ctrl-btn btn-stop" onclick="stopAndGoHome()">
+            ✕ Stop
+          </button>
+        </div>
+      </section>
+
+      <!-- Chat Section -->
+      <section class="chat-section" id="chat-section">
+        <div class="chat-header">Text Chat</div>
+        <div class="chat-messages" id="chat-messages">
+          <div class="chat-system">Say hello to your stranger 👋</div>
+        </div>
+        <div class="chat-input-row">
+          <input type="text" id="chat-input" placeholder="Type a message..." maxlength="300"
+            onkeydown="if(event.key==='Enter') sendChatMessage()" />
+          <button class="chat-send-btn" onclick="sendChatMessage()">↑</button>
+        </div>
+      </section>
+
+    </main>
+
+    <!-- ════ CHESS PANEL (hidden until accepted) ════ -->
+    <div class="chess-panel" id="chess-panel">
+      <div class="chess-panel-inner">
+        <div class="chess-header">
+          <div class="chess-title">♟ Chess</div>
+          <div class="chess-turn" id="chess-turn">—</div>
+          <div class="chess-header-actions">
+            <button class="chess-action-btn" onclick="offerDraw()" id="btn-draw">½ Draw</button>
+            <button class="chess-action-btn red" onclick="resignChess()">⚑ Resign</button>
+          </div>
+        </div>
+        <div class="chess-body">
+          <div id="chess-board" class="chess-board-el"></div>
+          <div class="chess-sidebar">
+            <div class="chess-info">
+              <div class="ci-row">
+                <span class="ci-label">Playing as</span>
+                <span class="ci-val" id="chess-color-label">—</span>
+              </div>
+              <div class="ci-row">
+                <span class="ci-label">Status</span>
+                <span class="ci-val" id="chess-status">Active</span>
+              </div>
+            </div>
+            <div class="chess-moves-list" id="chess-moves-list">
+              <div class="moves-title">Moves</div>
+              <div id="moves-content" class="moves-content"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ═══════════════ MODALS ═══════════════ -->
+
+  <!-- Chess Invite Modal -->
+  <div class="modal-backdrop" id="modal-chess-invite">
+    <div class="modal">
+      <div class="modal-icon">♟</div>
+      <h2 class="modal-title">Chess Challenge!</h2>
+      <p class="modal-body">Your stranger wants to play chess.<br/>Do you accept?</p>
+      <div class="modal-actions">
+        <button class="modal-btn accept" onclick="respondChess(true)">✓ Accept</button>
+        <button class="modal-btn decline" onclick="respondChess(false)">✕ Decline</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Draw Offer Modal -->
+  <div class="modal-backdrop" id="modal-draw">
+    <div class="modal">
+      <div class="modal-icon">½</div>
+      <h2 class="modal-title">Draw Offer</h2>
+      <p class="modal-body">Your opponent offers a draw.</p>
+      <div class="modal-actions">
+        <button class="modal-btn accept" onclick="respondDraw(true)">✓ Accept</button>
+        <button class="modal-btn decline" onclick="respondDraw(false)">✕ Decline</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Game Over Modal -->
+  <div class="modal-backdrop" id="modal-gameover">
+    <div class="modal">
+      <div class="modal-icon" id="gameover-icon">🏆</div>
+      <h2 class="modal-title" id="gameover-title">Game Over</h2>
+      <p class="modal-body" id="gameover-body">—</p>
+      <div class="modal-actions">
+        <button class="modal-btn accept" onclick="closeGameOver()">Continue Call</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast -->
+  <div class="toast" id="toast"></div>
+
+  <script src="client.js"></script>
+</body>
+</html>
