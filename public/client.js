@@ -1,583 +1,646 @@
-/* ═══════════════════════════════════════════
-   ChessCall — Client JS
-   WebRTC + Socket.io + Chess.js integration
-═══════════════════════════════════════════ */
-
 'use strict';
+/* ═══════════════════════════════════════════════
+   ChessCall v2 — Client
+   - Robust WebRTC with retry logic
+   - Custom chess board (Unicode pieces, no images)
+   - Full chess rules via chess.js
+   - Clean socket.io events
+═══════════════════════════════════════════════ */
 
-// ── STATE ─────────────────────────────────────────────────────────────
-let socket = null;
-let localStream = null;
-let peerConnection = null;
-let currentRoomId = null;
-let isConnected = false;
-let micEnabled = true;
-let camEnabled = true;
+// ── GLOBALS ──────────────────────────────────────────────────
+let socket, localStream, pc, roomId;
+let micOn = true, camOn = true, connected = false;
 
-// Chess state
-let chessGame = null;
-let board = null;
-let myColor = null;
-let moveCount = 0;
-let isChessActive = false;
-let highlightedSquares = [];
+// Chess
+let game = null;       // chess.js instance
+let myColor = null;    // 'white' | 'black'
+let selected = null;   // selected square e.g. 'e2'
+let legalMoves = [];   // legal moves from selected
+let lastMove = null;   // {from, to} for highlight
+let chessActive = false;
 
-// ── WEBRTC CONFIG ──────────────────────────────────────────────────────
-const ICE_CONFIG = {
-  iceServers: [
-    { urls: 'stun:stun.l.google.com:19302' },
-    { urls: 'stun:stun1.l.google.com:19302' },
-    { urls: 'stun:stun2.l.google.com:19302' },
-    { urls: 'stun:openrelay.metered.ca:80' },
-    {
-      urls: 'turn:openrelay.metered.ca:80',
-      username: 'openrelayproject',
-      credential: 'openrelayproject'
-    }
+// ── UNICODE PIECES ────────────────────────────────────────────
+const PIECES = {
+  wK:'♔', wQ:'♕', wR:'♖', wB:'♗', wN:'♘', wP:'♙',
+  bK:'♚', bQ:'♛', bR:'♜', bB:'♝', bN:'♞', bP:'♟'
+};
+const FILES = ['a','b','c','d','e','f','g','h'];
+
+// ── ICE SERVERS ───────────────────────────────────────────────
+const ICE = {
+  iceServers:[
+    {urls:'stun:stun.l.google.com:19302'},
+    {urls:'stun:stun1.l.google.com:19302'},
+    {urls:'stun:stun2.l.google.com:19302'},
+    {urls:'stun:stun.cloudflare.com:3478'},
+    {urls:'turn:openrelay.metered.ca:80',
+     username:'openrelayproject',credential:'openrelayproject'},
+    {urls:'turn:openrelay.metered.ca:443',
+     username:'openrelayproject',credential:'openrelayproject'},
   ],
-  iceCandidatePoolSize: 10
+  iceCandidatePoolSize:10
 };
 
-// ── DOM REFS ───────────────────────────────────────────────────────────
-const $ = id => document.getElementById(id);
+// ── HELPERS ───────────────────────────────────────────────────
+const $  = id => document.getElementById(id);
+let toastTimer;
+function toast(msg, dur=3000) {
+  const t = $('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove('show'), dur);
+}
+function setStatus(state, txt) {
+  const d = $('status-dot');
+  d.className = 'status-dot ' + state;
+  $('status-txt').textContent = txt;
+}
+function addSys(msg) {
+  const el = document.createElement('div');
+  el.className = 'sys-msg';
+  el.textContent = msg;
+  const b = $('chat-body');
+  b.appendChild(el);
+  b.scrollTop = b.scrollHeight;
+}
+function addMsg(msg, mine) {
+  const el = document.createElement('div');
+  el.className = 'chat-msg ' + (mine ? 'mine' : 'theirs');
+  el.textContent = msg;
+  const b = $('chat-body');
+  b.appendChild(el);
+  b.scrollTop = b.scrollHeight;
+}
+function openModal(id)  { $(id).classList.add('show'); }
+function closeModal(id) { $(id).classList.remove('show'); }
 
-// ═══════════════════════════════════════════════════════════════════════
-//   ENTRY POINT
-// ═══════════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════
+//   START APP
+// ══════════════════════════════════════════════════════════════
 async function startApp() {
+  $('btn-start').textContent = 'Getting camera...';
+  $('btn-start').disabled = true;
   try {
     localStream = await navigator.mediaDevices.getUserMedia({
-      video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'user' },
-      audio: { echoCancellation: true, noiseSuppression: true }
+      video:{ width:{ideal:1280}, height:{ideal:720}, facingMode:'user' },
+      audio:{ echoCancellation:true, noiseSuppression:true, sampleRate:44100 }
     });
-
     $('local-video').srcObject = localStream;
 
     // Switch screens
-    $('screen-landing').classList.remove('active');
     $('screen-landing').style.display = 'none';
-    $('screen-call').classList.add('active');
     $('screen-call').style.display = 'flex';
+    $('screen-call').classList.add('active');
 
     initSocket();
     findMatch();
-  } catch (err) {
-    console.error('Media error:', err);
-    $('perm-warning').style.display = 'flex';
-    showToast('⚠ Camera/mic access denied. Please allow and try again.');
+  } catch(e) {
+    console.error('Media error:', e);
+    $('perm-warn').style.display = 'flex';
+    $('btn-start').textContent = 'Try Again';
+    $('btn-start').disabled = false;
+    toast('⚠ Camera/mic access denied!');
   }
 }
 
-// ═══════════════════════════════════════════════════════════════════════
-//   SOCKET.IO SETUP
-// ═══════════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════
+//   SOCKET.IO
+// ══════════════════════════════════════════════════════════════
 function initSocket() {
-  socket = io({ transports: ['websocket', 'polling'] });
+  socket = io({ transports:['websocket','polling'], reconnectionAttempts:5 });
 
-  // ── Connection lifecycle
-  socket.on('connect', () => {
-    console.log('[Socket] Connected:', socket.id);
-  });
-
+  socket.on('connect', () => console.log('[socket] connected', socket.id));
   socket.on('disconnect', () => {
-    console.log('[Socket] Disconnected');
-    setStatus('disconnected', 'Disconnected');
-    if (isConnected) {
-      handlePartnerLeft();
-    }
+    setStatus('off','Disconnected');
+    if(connected) handleLeft();
   });
 
-  // ── Matchmaking
+  // Matchmaking
   socket.on('waiting', () => {
-    setStatus('waiting', 'Searching...');
-    showWaiting('Looking for a stranger...');
+    setStatus('searching','Searching...');
+    showSearching('Finding a stranger...');
     $('btn-chess').disabled = true;
-    isConnected = false;
+    connected = false;
   });
 
-  socket.on('matched', async ({ roomId, isInitiator }) => {
-    console.log('[Match] Room:', roomId, '| Initiator:', isInitiator);
-    currentRoomId = roomId;
-    await setupPeerConnection();
-
-    if (isInitiator) {
-      const offer = await peerConnection.createOffer();
-      await peerConnection.setLocalDescription(offer);
+  socket.on('matched', async ({ roomId:rid, isInitiator }) => {
+    roomId = rid;
+    connected = true;
+    await createPC();
+    if(isInitiator) {
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
       socket.emit('offer', { roomId, offer });
     }
-
-    addChatSystem('Connected to a stranger! Say hello 👋');
-    setStatus('connected', 'Connected');
+    setStatus('connected','Connected');
     $('btn-chess').disabled = false;
-    isConnected = true;
+    $('chat-body').innerHTML = '';
+    addSys('Connected! Say hello 👋');
   });
 
-  socket.on('partner-left', handlePartnerLeft);
+  socket.on('partner-left', handleLeft);
 
-  // ── WebRTC Signaling
+  // WebRTC signaling
   socket.on('offer', async ({ offer }) => {
-    if (!peerConnection) await setupPeerConnection();
-    await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
-    const answer = await peerConnection.createAnswer();
-    await peerConnection.setLocalDescription(answer);
-    socket.emit('answer', { roomId: currentRoomId, answer });
+    if(!pc) await createPC();
+    await pc.setRemoteDescription(new RTCSessionDescription(offer));
+    const answer = await pc.createAnswer();
+    await pc.setLocalDescription(answer);
+    socket.emit('answer', { roomId, answer });
   });
 
   socket.on('answer', async ({ answer }) => {
-    if (!peerConnection) return;
-    await peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
+    if(pc && pc.signalingState !== 'stable')
+      await pc.setRemoteDescription(new RTCSessionDescription(answer));
   });
 
   socket.on('ice-candidate', ({ candidate }) => {
-    if (peerConnection && candidate) {
-      peerConnection.addIceCandidate(new RTCIceCandidate(candidate)).catch(console.warn);
-    }
+    if(pc && candidate)
+      pc.addIceCandidate(new RTCIceCandidate(candidate)).catch(()=>{});
   });
 
-  // ── Chess events
-  socket.on('chess-invite', () => {
-    openModal('modal-chess-invite');
-  });
+  // Chess
+  socket.on('chess-invite', () => openModal('m-chess-invite'));
 
   socket.on('chess-start', ({ color }) => {
     myColor = color;
-    initChessBoard(color);
-    showToast(`Chess started! You are ${color === 'white' ? '⬜ White' : '⬛ Black'}`);
+    startChessBoard(color);
+    toast(`Chess started! You are ${color === 'white' ? '⬜ White' : '⬛ Black'}`);
   });
 
-  socket.on('chess-declined', () => {
-    showToast('Stranger declined the chess invite 😞');
-  });
+  socket.on('chess-declined', () => toast('Chess invite declined 😞'));
 
-  socket.on('chess-move', ({ move }) => {
-    const result = chessGame.move(move);
-    if (result) {
-      board.position(chessGame.fen());
-      addMoveChip(result.san, result.color === 'w' ? 'white' : 'black');
-      updateChessStatus();
-      checkGameOver();
+  socket.on('chess-move', ({ from, to, promotion }) => {
+    const move = game.move({ from, to, promotion: promotion || 'q' });
+    if(move) {
+      lastMove = { from, to };
+      renderBoard();
+      addMoveChip(move.san, move.color);
+      updateTurnBadge();
+      checkGameEnd();
     }
   });
 
   socket.on('chess-opponent-resigned', () => {
-    showGameOver('🏆', 'You Win!', 'Your opponent resigned.');
-    endChess();
+    showGameOver('🏆','You Win!','Your opponent resigned.');
+    endChess(false);
   });
 
-  socket.on('chess-draw-offer', () => {
-    openModal('modal-draw');
-  });
+  socket.on('chess-draw-offer', () => openModal('m-draw'));
 
   socket.on('chess-draw-response', ({ accepted }) => {
-    if (accepted) {
-      showGameOver('🤝', 'Draw!', 'Both players agreed to a draw.');
-      endChess();
+    if(accepted) {
+      showGameOver('🤝','Draw!','Both players agreed to a draw.');
+      endChess(false);
     } else {
-      showToast('Draw offer declined.');
+      toast('Draw offer declined.');
     }
   });
 
-  // ── Chat
-  socket.on('chat-message', ({ message }) => {
-    addChatMsg(message, false);
-  });
+  // Chat
+  socket.on('chat-message', ({ message }) => addMsg(message, false));
 
   socket.on('skipped', () => {
-    cleanupPeerConnection();
-    hideChessPanel();
+    closeChess();
+    cleanPC();
   });
 }
 
-// ═══════════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════
 //   WEBRTC
-// ═══════════════════════════════════════════════════════════════════════
-async function setupPeerConnection() {
-  cleanupPeerConnection();
-
-  peerConnection = new RTCPeerConnection(ICE_CONFIG);
+// ══════════════════════════════════════════════════════════════
+async function createPC() {
+  cleanPC();
+  pc = new RTCPeerConnection(ICE);
 
   // Add local tracks
-  localStream.getTracks().forEach(track => {
-    peerConnection.addTrack(track, localStream);
-  });
+  localStream.getTracks().forEach(t => pc.addTrack(t, localStream));
 
-  // Remote stream
-  peerConnection.ontrack = ({ streams }) => {
-    if (streams && streams[0]) {
-      $('remote-video').srcObject = streams[0];
-      hideWaiting();
-    }
+  // Receive remote stream
+  const remoteStream = new MediaStream();
+  $('remote-video').srcObject = remoteStream;
+
+  pc.ontrack = e => {
+    e.streams[0].getTracks().forEach(t => remoteStream.addTrack(t));
+    hideSearching();
   };
 
-  // ICE candidates
-  peerConnection.onicecandidate = ({ candidate }) => {
-    if (candidate && socket && currentRoomId) {
-      socket.emit('ice-candidate', { roomId: currentRoomId, candidate });
-    }
+  pc.onicecandidate = e => {
+    if(e.candidate && socket && roomId)
+      socket.emit('ice-candidate', { roomId, candidate:e.candidate });
   };
 
-  peerConnection.oniceconnectionstatechange = () => {
-    const state = peerConnection.iceConnectionState;
-    console.log('[ICE]', state);
-    if (state === 'disconnected' || state === 'failed' || state === 'closed') {
-      handlePartnerLeft();
-    }
+  pc.onconnectionstatechange = () => {
+    const s = pc.connectionState;
+    console.log('[PC]', s);
+    if(s === 'connected') hideSearching();
+    if(s === 'disconnected' || s === 'failed' || s === 'closed') handleLeft();
   };
 
-  peerConnection.onconnectionstatechange = () => {
-    const state = peerConnection.connectionState;
-    console.log('[Peer]', state);
-    if (state === 'connected') {
-      hideWaiting();
-    }
+  pc.oniceconnectionstatechange = () => {
+    if(pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed')
+      hideSearching();
   };
 }
 
-function cleanupPeerConnection() {
-  if (peerConnection) {
-    peerConnection.ontrack = null;
-    peerConnection.onicecandidate = null;
-    peerConnection.oniceconnectionstatechange = null;
-    peerConnection.onconnectionstatechange = null;
-    peerConnection.close();
-    peerConnection = null;
-  }
-  $('remote-video').srcObject = null;
-  currentRoomId = null;
-  isConnected = false;
+function cleanPC() {
+  if(pc) { pc.close(); pc = null; }
+  const rv = $('remote-video');
+  if(rv.srcObject) { rv.srcObject.getTracks().forEach(t=>t.stop()); rv.srcObject = null; }
+  roomId = null;
+  connected = false;
 }
 
-// ═══════════════════════════════════════════════════════════════════════
-//   MATCHMAKING ACTIONS
-// ═══════════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════
+//   MATCHMAKING CONTROLS
+// ══════════════════════════════════════════════════════════════
 function findMatch() {
-  if (!socket) return;
-  showWaiting('Looking for a stranger...');
-  setStatus('waiting', 'Searching...');
+  showSearching('Finding a stranger...');
+  setStatus('searching','Searching...');
   $('btn-chess').disabled = true;
-  clearChat();
-  socket.emit('find-match');
+  if(socket) socket.emit('find-match');
 }
 
 function skipStranger() {
-  if (!socket) return;
-  hideChessPanel();
-  endChess();
-  addChatSystem('You skipped.');
+  if(!socket) return;
+  closeChess();
+  addSys('You skipped.');
   socket.emit('skip');
-  setTimeout(() => findMatch(), 300);
+  setTimeout(findMatch, 300);
 }
 
-function stopAndGoHome() {
-  if (socket) socket.disconnect();
-  if (localStream) localStream.getTracks().forEach(t => t.stop());
-  cleanupPeerConnection();
-  hideChessPanel();
-  endChess();
+function stopCall() {
+  closeChess();
+  if(socket) { socket.disconnect(); socket = null; }
+  if(localStream) { localStream.getTracks().forEach(t=>t.stop()); localStream = null; }
+  cleanPC();
   $('screen-call').classList.remove('active');
   $('screen-call').style.display = 'none';
-  $('screen-landing').classList.add('active');
   $('screen-landing').style.display = 'flex';
-  socket = null;
-  localStream = null;
+  $('screen-landing').classList.add('active');
 }
 
-function handlePartnerLeft() {
-  if (!isConnected) return;
-  isConnected = false;
-  setStatus('disconnected', 'Stranger left');
-  showWaiting('Stranger disconnected...');
-  addChatSystem('Stranger has left the chat.');
+function handleLeft() {
+  if(!connected && !chessActive) return;
+  connected = false;
+  setStatus('off','Stranger left');
+  showSearching('Stranger disconnected...');
+  addSys('Stranger has left.');
   $('btn-chess').disabled = true;
-  cleanupPeerConnection();
-  if (isChessActive) {
-    endChess();
-    showToast('Chess ended — stranger left');
-  }
-  // Auto find next after 2s
-  setTimeout(() => {
-    if (socket && socket.connected) findMatch();
-  }, 2000);
+  if(chessActive) { closeChess(); toast('Chess ended — stranger left'); }
+  cleanPC();
+  setTimeout(() => { if(socket && socket.connected) findMatch(); }, 2000);
 }
 
-// ═══════════════════════════════════════════════════════════════════════
-//   CHESS
-// ═══════════════════════════════════════════════════════════════════════
-function inviteToChess() {
-  if (!isConnected || isChessActive) return;
+// ══════════════════════════════════════════════════════════════
+//   VIDEO OVERLAYS
+// ══════════════════════════════════════════════════════════════
+function showSearching(msg) {
+  const ov = $('searching-ov');
+  ov.classList.remove('gone');
+  $('search-msg').textContent = msg;
+}
+function hideSearching() {
+  $('searching-ov').classList.add('gone');
+}
+
+// ══════════════════════════════════════════════════════════════
+//   MEDIA CONTROLS
+// ══════════════════════════════════════════════════════════════
+function toggleMic() {
+  if(!localStream) return;
+  micOn = !micOn;
+  localStream.getAudioTracks().forEach(t => t.enabled = micOn);
+  const btn = $('btn-mic');
+  btn.classList.toggle('muted', !micOn);
+  btn.title = micOn ? 'Mute mic' : 'Unmute mic';
+  toast(micOn ? '🎤 Mic on' : '🔇 Mic muted');
+}
+function toggleCam() {
+  if(!localStream) return;
+  camOn = !camOn;
+  localStream.getVideoTracks().forEach(t => t.enabled = camOn);
+  const btn = $('btn-cam');
+  btn.classList.toggle('muted', !camOn);
+  btn.title = camOn ? 'Turn off camera' : 'Turn on camera';
+  toast(camOn ? '📷 Camera on' : '🚫 Camera off');
+}
+
+// ══════════════════════════════════════════════════════════════
+//   CHAT
+// ══════════════════════════════════════════════════════════════
+function sendMsg() {
+  const inp = $('chat-in');
+  const msg = inp.value.trim();
+  if(!msg || !connected) return;
+  socket.emit('chat-message', { message: msg });
+  addMsg(msg, true);
+  inp.value = '';
+}
+
+// ══════════════════════════════════════════════════════════════
+//   CHESS — INVITE FLOW
+// ══════════════════════════════════════════════════════════════
+function inviteChess() {
+  if(!connected || chessActive) return;
   socket.emit('chess-invite');
-  showToast('Chess invite sent... ♟');
+  toast('Chess invite sent ♟');
 }
-
 function respondChess(accepted) {
-  closeModal('modal-chess-invite');
+  closeModal('m-chess-invite');
   socket.emit('chess-response', { accepted });
 }
 
-function initChessBoard(color) {
-  isChessActive = true;
-  moveCount = 0;
-  chessGame = new Chess();
-  $('moves-content').innerHTML = '';
-  $('chess-color-label').textContent = color === 'white' ? '⬜ White' : '⬛ Black';
-  $('chess-status').textContent = 'Active';
+// ══════════════════════════════════════════════════════════════
+//   CHESS BOARD — CUSTOM IMPLEMENTATION (Unicode pieces)
+// ══════════════════════════════════════════════════════════════
+function startChessBoard(color) {
+  game = new Chess();
+  myColor = color;
+  chessActive = true;
+  selected = null;
+  legalMoves = [];
+  lastMove = null;
 
-  const cfg = {
-    position: 'start',
-    orientation: color,
-    draggable: true,
-    pieceTheme: 'https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/img/chesspieces/wikipedia/{piece}.png',
-    onDragStart: onDragStart,
-    onDrop: onDrop,
-    onSnapEnd: onSnapEnd
-  };
+  // Set color display
+  $('my-color-val').textContent = color === 'white' ? '⬜ White' : '⬛ Black';
+  $('mh-list').innerHTML = '';
 
-  if (board) board.destroy();
-  board = Chessboard('chess-board', cfg);
-  openChessPanel();
-  updateChessStatus();
+  buildBoard();
+  renderBoard();
+  updateTurnBadge();
+
+  // Open chess drawer
+  $('chess-drawer').classList.add('open');
 }
 
-function onDragStart(source, piece) {
-  if (!chessGame || chessGame.game_over()) return false;
-  if (myColor === 'white' && piece.search(/^b/) !== -1) return false;
-  if (myColor === 'black' && piece.search(/^w/) !== -1) return false;
-  if (chessGame.turn() === 'w' && myColor !== 'white') return false;
-  if (chessGame.turn() === 'b' && myColor !== 'black') return false;
-  return true;
+function buildBoard() {
+  const board = $('chess-board');
+  board.innerHTML = '';
+
+  // Rank labels (8 down to 1 for white, 1 to 8 for black)
+  const rl = $('rank-labels');
+  rl.innerHTML = '';
+
+  const ranks = myColor === 'white'
+    ? [8,7,6,5,4,3,2,1]
+    : [1,2,3,4,5,6,7,8];
+
+  const files = myColor === 'white'
+    ? [0,1,2,3,4,5,6,7]
+    : [7,6,5,4,3,2,1,0];
+
+  // Build 64 squares
+  for(let ri=0; ri<8; ri++) {
+    const rankNum = ranks[ri];
+
+    // Rank label
+    const lbl = document.createElement('div');
+    lbl.className = 'rank-lbl';
+    lbl.textContent = rankNum;
+    rl.appendChild(lbl);
+
+    for(let fi=0; fi<8; fi++) {
+      const fileIdx = files[fi];
+      const sq = FILES[fileIdx] + rankNum;
+      const isLight = (rankNum + fileIdx) % 2 === 0;
+
+      const cell = document.createElement('div');
+      cell.className = 'sq ' + (isLight ? 'light' : 'dark');
+      cell.dataset.sq = sq;
+      cell.onclick = () => handleSquareClick(sq);
+      board.appendChild(cell);
+    }
+  }
 }
 
-function onDrop(source, target) {
-  removeHighlights();
-  const move = chessGame.move({ from: source, to: target, promotion: 'q' });
-  if (move === null) return 'snapback';
+function renderBoard() {
+  const board = $('chess-board');
+  const squares = board.querySelectorAll('.sq');
 
-  addMoveChip(move.san, move.color === 'w' ? 'white' : 'black');
-  socket.emit('chess-move', { move: { from: source, to: target, promotion: 'q' } });
-  updateChessStatus();
-  highlightSquare(source);
-  highlightSquare(target);
-  checkGameOver();
+  squares.forEach(cell => {
+    const sq = cell.dataset.sq;
+    // Reset classes
+    cell.className = 'sq ' + getSquareColor(sq);
+
+    // Highlight last move
+    if(lastMove && (sq === lastMove.from || sq === lastMove.to)) {
+      cell.classList.add('last-move');
+    }
+
+    // Highlight selection
+    if(sq === selected) cell.classList.add('selected');
+
+    // Highlight legal moves
+    if(legalMoves.includes(sq)) {
+      cell.classList.add('move-hint');
+      const piece = game.get(sq);
+      if(piece) cell.classList.add('has-piece');
+    }
+
+    // King in check highlight
+    if(game.in_check()) {
+      const turn = game.turn();
+      const kingPiece = { type:'k', color:turn };
+      // Find king square
+      const fen = game.fen().split(' ')[0];
+      if(sq === findKing(turn)) cell.classList.add('in-check');
+    }
+
+    // Render piece
+    cell.innerHTML = '';
+    const piece = game.get(sq);
+    if(piece) {
+      const span = document.createElement('span');
+      const key = (piece.color === 'w' ? 'w' : 'b') + piece.type.toUpperCase();
+      span.className = 'piece ' + (piece.color === 'w' ? 'white-piece' : 'black-piece');
+      span.textContent = PIECES[key] || '?';
+      cell.appendChild(span);
+    }
+  });
 }
 
-function onSnapEnd() {
-  if (board && chessGame) board.position(chessGame.fen());
+function findKing(color) {
+  // Find king position from game board
+  for(const file of FILES) {
+    for(let rank=1; rank<=8; rank++) {
+      const sq = file + rank;
+      const p = game.get(sq);
+      if(p && p.type === 'k' && p.color === color) return sq;
+    }
+  }
+  return null;
 }
 
-function updateChessStatus() {
-  if (!chessGame) return;
-  const turn = chessGame.turn() === 'w' ? 'White' : 'Black';
-  let status = '';
+function getSquareColor(sq) {
+  const file = FILES.indexOf(sq[0]);
+  const rank = parseInt(sq[1]);
+  return (rank + file) % 2 === 0 ? 'light' : 'dark';
+}
 
-  if (chessGame.in_checkmate()) {
-    status = `${turn} in checkmate`;
-  } else if (chessGame.in_check()) {
-    status = `${turn} in check!`;
-    $('chess-status').style.color = 'var(--red)';
-  } else if (chessGame.in_draw()) {
-    status = 'Draw';
+function handleSquareClick(sq) {
+  if(!chessActive || !game) return;
+
+  // Check if it's my turn
+  const myTurn = (game.turn() === 'w' && myColor === 'white') ||
+                 (game.turn() === 'b' && myColor === 'black');
+  if(!myTurn) { toast('Not your turn!'); return; }
+
+  const piece = game.get(sq);
+
+  // If a square is already selected
+  if(selected) {
+    // Clicking a legal move target
+    if(legalMoves.includes(sq)) {
+      makeMove(selected, sq);
+      return;
+    }
+    // Clicking own piece — switch selection
+    if(piece && piece.color === (myColor === 'white' ? 'w' : 'b')) {
+      selectSquare(sq);
+      return;
+    }
+    // Clicking elsewhere — deselect
+    selected = null;
+    legalMoves = [];
+    renderBoard();
+    return;
+  }
+
+  // Select piece if it's mine
+  if(piece && piece.color === (myColor === 'white' ? 'w' : 'b')) {
+    selectSquare(sq);
+  }
+}
+
+function selectSquare(sq) {
+  selected = sq;
+  const moves = game.moves({ square:sq, verbose:true });
+  legalMoves = moves.map(m => m.to);
+  renderBoard();
+}
+
+function makeMove(from, to) {
+  // Handle pawn promotion (auto-queen for now)
+  const piece = game.get(from);
+  const promotion = piece && piece.type === 'p' &&
+    (to[1] === '8' || to[1] === '1') ? 'q' : undefined;
+
+  const move = game.move({ from, to, promotion: promotion || 'q' });
+  if(!move) return;
+
+  lastMove = { from, to };
+  selected = null;
+  legalMoves = [];
+  renderBoard();
+  addMoveChip(move.san, move.color);
+  updateTurnBadge();
+
+  // Send to opponent
+  socket.emit('chess-move', { from, to, promotion: promotion || 'q' });
+
+  checkGameEnd();
+}
+
+function updateTurnBadge() {
+  if(!game) return;
+  const myTurn = (game.turn() === 'w' && myColor === 'white') ||
+                 (game.turn() === 'b' && myColor === 'black');
+
+  if(game.in_check()) {
+    $('chess-turn-badge').textContent = myTurn ? '🔴 Your King in Check!' : '⚠ Opponent in Check';
   } else {
-    status = 'Active';
-    $('chess-status').style.color = '';
+    $('chess-turn-badge').textContent = myTurn ? '🟢 Your Turn' : '⏳ Opponent\'s Turn';
   }
-
-  const myTurn = (chessGame.turn() === 'w' && myColor === 'white') ||
-                 (chessGame.turn() === 'b' && myColor === 'black');
-
-  $('chess-turn').textContent = myTurn ? '🟢 Your turn' : `${turn}'s turn`;
-  $('chess-status').textContent = status;
-}
-
-function checkGameOver() {
-  if (!chessGame || !chessGame.game_over()) return;
-  if (chessGame.in_checkmate()) {
-    const winner = chessGame.turn() === 'w' ? 'Black' : 'White';
-    const iWon = (winner === 'White' && myColor === 'white') ||
-                 (winner === 'Black' && myColor === 'black');
-    showGameOver(iWon ? '🏆' : '😔', iWon ? 'You Win!' : 'You Lost!', `${winner} wins by checkmate.`);
-  } else if (chessGame.in_draw()) {
-    showGameOver('🤝', 'Draw!', 'The game ended in a draw.');
-  } else if (chessGame.in_stalemate()) {
-    showGameOver('🤝', 'Stalemate!', 'The game ended in stalemate.');
-  }
-  endChess();
-}
-
-function resignChess() {
-  if (!isChessActive) return;
-  socket.emit('chess-resign');
-  showGameOver('🏳️', 'You Resigned', 'Better luck next time!');
-  endChess();
-}
-
-function offerDraw() {
-  if (!isChessActive) return;
-  socket.emit('chess-draw-offer');
-  showToast('Draw offered to opponent');
-}
-
-function respondDraw(accepted) {
-  closeModal('modal-draw');
-  socket.emit('chess-draw-response', { accepted });
-  if (accepted) {
-    showGameOver('🤝', 'Draw!', 'Both players agreed to a draw.');
-    endChess();
-  }
-}
-
-function endChess() {
-  isChessActive = false;
-  myColor = null;
-  chessGame = null;
-  moveCount = 0;
 }
 
 function addMoveChip(san, color) {
-  moveCount++;
-  const chip = document.createElement('div');
-  chip.className = `move-chip ${color}`;
+  const chip = document.createElement('span');
+  chip.className = 'mv ' + (color === 'w' ? 'w' : 'b');
   chip.textContent = san;
-  $('moves-content').appendChild(chip);
-  $('moves-content').scrollTop = $('moves-content').scrollHeight;
+  const list = $('mh-list');
+  list.appendChild(chip);
+  list.scrollTop = list.scrollHeight;
 }
 
-// Square highlighting
-function highlightSquare(sq) {
-  const el = document.querySelector(`.square-${sq}`);
-  if (el) {
-    el.classList.add('highlight-' + (el.classList.contains('white-1e1d7') ? 'white' : 'black'));
-    highlightedSquares.push(el);
+function checkGameEnd() {
+  if(!game) return;
+  if(game.in_checkmate()) {
+    const winner = game.turn() === 'w' ? 'Black' : 'White';
+    const iWon = (winner === 'White' && myColor === 'white') ||
+                 (winner === 'Black' && myColor === 'black');
+    showGameOver(iWon ? '🏆' : '😔', iWon ? 'You Win!' : 'You Lost!',
+      `${winner} wins by checkmate!`);
+    endChess(false);
+  } else if(game.in_stalemate()) {
+    showGameOver('🤝','Stalemate!','No legal moves — it\'s a draw.');
+    endChess(false);
+  } else if(game.in_draw()) {
+    showGameOver('🤝','Draw!','The game ended in a draw.');
+    endChess(false);
   }
-}
-function removeHighlights() {
-  highlightedSquares.forEach(el => {
-    el.classList.remove('highlight-white', 'highlight-black');
-  });
-  highlightedSquares = [];
-}
-
-// ═══════════════════════════════════════════════════════════════════════
-//   MEDIA CONTROLS
-// ═══════════════════════════════════════════════════════════════════════
-function toggleMic() {
-  if (!localStream) return;
-  micEnabled = !micEnabled;
-  localStream.getAudioTracks().forEach(t => t.enabled = micEnabled);
-  const btn = $('btn-mic');
-  btn.textContent = micEnabled ? '🎤' : '🔇';
-  btn.classList.toggle('muted', !micEnabled);
-  showToast(micEnabled ? 'Microphone on' : 'Microphone muted');
-}
-
-function toggleCam() {
-  if (!localStream) return;
-  camEnabled = !camEnabled;
-  localStream.getVideoTracks().forEach(t => t.enabled = camEnabled);
-  const btn = $('btn-cam');
-  btn.textContent = camEnabled ? '📷' : '🚫';
-  btn.classList.toggle('muted', !camEnabled);
-  showToast(camEnabled ? 'Camera on' : 'Camera off');
-}
-
-// ═══════════════════════════════════════════════════════════════════════
-//   CHAT
-// ═══════════════════════════════════════════════════════════════════════
-function sendChatMessage() {
-  const input = $('chat-input');
-  const msg = input.value.trim();
-  if (!msg || !isConnected) return;
-  socket.emit('chat-message', { message: msg });
-  addChatMsg(msg, true);
-  input.value = '';
-}
-
-function addChatMsg(msg, mine) {
-  const el = document.createElement('div');
-  el.className = `chat-msg ${mine ? 'mine' : 'theirs'}`;
-  el.textContent = msg;
-  const container = $('chat-messages');
-  container.appendChild(el);
-  container.scrollTop = container.scrollHeight;
-}
-
-function addChatSystem(msg) {
-  const el = document.createElement('div');
-  el.className = 'chat-system';
-  el.textContent = msg;
-  const container = $('chat-messages');
-  container.appendChild(el);
-  container.scrollTop = container.scrollHeight;
-}
-
-function clearChat() {
-  $('chat-messages').innerHTML = '<div class="chat-system">Waiting for connection...</div>';
-}
-
-// ═══════════════════════════════════════════════════════════════════════
-//   UI HELPERS
-// ═══════════════════════════════════════════════════════════════════════
-function setStatus(state, text) {
-  const dot = $('status-dot');
-  dot.className = 'status-dot ' + state;
-  $('status-text').textContent = text;
-}
-
-function showWaiting(msg) {
-  const overlay = $('waiting-overlay');
-  overlay.classList.remove('hidden');
-  $('waiting-msg').textContent = msg;
-}
-
-function hideWaiting() {
-  $('waiting-overlay').classList.add('hidden');
-}
-
-function openChessPanel() {
-  $('chess-panel').classList.add('open');
-}
-
-function hideChessPanel() {
-  $('chess-panel').classList.remove('open');
-}
-
-// Modals
-function openModal(id) {
-  $(id).classList.add('open');
-}
-function closeModal(id) {
-  $(id).classList.remove('open');
-}
-function closeGameOver() {
-  closeModal('modal-gameover');
 }
 
 function showGameOver(icon, title, body) {
-  $('gameover-icon').textContent = icon;
-  $('gameover-title').textContent = title;
-  $('gameover-body').textContent = body;
-  openModal('modal-gameover');
+  $('go-icon').textContent = icon;
+  $('go-title').textContent = title;
+  $('go-text').textContent = body;
+  openModal('m-gameover');
 }
 
-// Toast
-let toastTimer;
-function showToast(msg) {
-  const toast = $('toast');
-  toast.textContent = msg;
-  toast.classList.add('show');
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => toast.classList.remove('show'), 3000);
+// ── CHESS ACTIONS ─────────────────────────────────────────────
+function resignGame() {
+  if(!chessActive) return;
+  socket.emit('chess-resign');
+  showGameOver('🏳️','You Resigned','Better luck next time!');
+  endChess(false);
 }
 
-// ── Close modals on backdrop click ────────────────────────────────────
-document.addEventListener('click', e => {
-  if (e.target.classList.contains('modal-backdrop')) {
-    e.target.classList.remove('open');
+function offerDraw() {
+  if(!chessActive) return;
+  socket.emit('chess-draw-offer');
+  toast('Draw offered to opponent');
+}
+
+function respondDraw(accepted) {
+  closeModal('m-draw');
+  socket.emit('chess-draw-response', { accepted });
+  if(accepted) {
+    showGameOver('🤝','Draw!','Both players agreed.');
+    endChess(false);
+  }
+}
+
+function closeChess() {
+  $('chess-drawer').classList.remove('open');
+  endChess(true);
+}
+
+function endChess(silent) {
+  chessActive = false;
+  myColor = null;
+  game = null;
+  selected = null;
+  legalMoves = [];
+  lastMove = null;
+  if(!silent) {
+    // Keep chess panel closed, continue call
+    setTimeout(() => $('chess-drawer').classList.remove('open'), 400);
+  }
+}
+
+// ══════════════════════════════════════════════════════════════
+//   KEYBOARD & GLOBAL EVENTS
+// ══════════════════════════════════════════════════════════════
+document.addEventListener('keydown', e => {
+  if(e.key === 'Escape') {
+    document.querySelectorAll('.modal-bg.show').forEach(m => m.classList.remove('show'));
   }
 });
 
-// ── Keyboard shortcuts ────────────────────────────────────────────────
-document.addEventListener('keydown', e => {
-  if (e.key === 'Escape') {
-    document.querySelectorAll('.modal-backdrop.open').forEach(m => m.classList.remove('open'));
+document.addEventListener('click', e => {
+  if(e.target.classList.contains('modal-bg')) {
+    e.target.classList.remove('show');
   }
 });
