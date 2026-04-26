@@ -505,3 +505,20 @@ html,body { height:100%; background:var(--bg); color:var(--text);
   font-size:18px; color:var(--dim);
   font-family:'DM Mono',monospace;
 }
+
+/* Tap-to-play button (mobile autoplay fix) */
+.tap-video-btn {
+  position:absolute; top:50%; left:50%;
+  transform:translate(-50%,-50%);
+  background:rgba(0,230,118,0.9); color:#000;
+  border:none; border-radius:50px;
+  padding:14px 28px; font-size:16px; font-weight:700;
+  cursor:pointer; z-index:10;
+  font-family:'DM Sans',sans-serif;
+  box-shadow:0 4px 20px rgba(0,230,118,0.4);
+  animation:pulse-btn 1.5s ease-in-out infinite;
+}
+@keyframes pulse-btn {
+  0%,100% { box-shadow:0 4px 20px rgba(0,230,118,0.4); }
+  50% { box-shadow:0 4px 40px rgba(0,230,118,0.8); }
+}
