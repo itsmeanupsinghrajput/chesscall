@@ -16,7 +16,6 @@ app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-// Stats endpoint (OUTSIDE connection block)
 app.get('/stats', (_, res) => {
   res.json({
     online: io.sockets.sockets.size,
@@ -38,19 +37,23 @@ function generateRoomId() {
 function leaveCurrentRoom(socket) {
   const roomId = socketToRoom[socket.id];
   if (!roomId || !rooms[roomId]) return;
+
   const room = rooms[roomId];
+
+  // Notify partner BEFORE socket leaves the room
   socket.to(roomId).emit('partner-left');
   socket.leave(roomId);
   delete socketToRoom[socket.id];
+
+  // Clean up the other player
   room.players = room.players.filter(id => id !== socket.id);
   if (room.players.length > 0) {
     const otherId = room.players[0];
-    if (otherId) {
-      delete socketToRoom[otherId];
-      const otherSocket = io.sockets.sockets.get(otherId);
-      if (otherSocket) otherSocket.leave(roomId);
-    }
+    delete socketToRoom[otherId];
+    const otherSocket = io.sockets.sockets.get(otherId);
+    if (otherSocket) otherSocket.leave(roomId);
   }
+
   delete rooms[roomId];
 }
 
@@ -61,6 +64,8 @@ io.on('connection', (socket) => {
   socket.on('find-match', () => {
     leaveCurrentRoom(socket);
     waitingQueue = waitingQueue.filter(id => id !== socket.id);
+
+    // Find a valid partner from queue
     while (waitingQueue.length > 0) {
       const partnerId = waitingQueue.shift();
       const partnerSocket = io.sockets.sockets.get(partnerId);
@@ -71,15 +76,17 @@ io.on('connection', (socket) => {
         socketToRoom[partnerId] = roomId;
         socket.join(roomId);
         partnerSocket.join(roomId);
+        // The non-initiator creates the offer
         socket.emit('matched', { roomId, isInitiator: false });
         partnerSocket.emit('matched', { roomId, isInitiator: true });
         console.log(`[Room] ${roomId}: ${socket.id} <-> ${partnerId}`);
         return;
       }
     }
+
     waitingQueue.push(socket.id);
     socket.emit('waiting');
-    console.log(`[Queue] ${socket.id} waiting. Queue size: ${waitingQueue.length}`);
+    console.log(`[Queue] ${socket.id} waiting. Queue: ${waitingQueue.length}`);
   });
 
   socket.on('skip', () => {
@@ -88,9 +95,15 @@ io.on('connection', (socket) => {
     socket.emit('skipped');
   });
 
-  socket.on('offer', ({ roomId, offer }) => { socket.to(roomId).emit('offer', { offer }); });
-  socket.on('answer', ({ roomId, answer }) => { socket.to(roomId).emit('answer', { answer }); });
-  socket.on('ice-candidate', ({ roomId, candidate }) => { socket.to(roomId).emit('ice-candidate', { candidate }); });
+  socket.on('offer', ({ roomId, offer }) => {
+    socket.to(roomId).emit('offer', { offer });
+  });
+  socket.on('answer', ({ roomId, answer }) => {
+    socket.to(roomId).emit('answer', { answer });
+  });
+  socket.on('ice-candidate', ({ roomId, candidate }) => {
+    socket.to(roomId).emit('ice-candidate', { candidate });
+  });
 
   socket.on('chess-invite', () => {
     const roomId = socketToRoom[socket.id];
@@ -104,9 +117,9 @@ io.on('connection', (socket) => {
     if (accepted) {
       rooms[roomId].chess.active = true;
       const players = rooms[roomId].players;
-      const shuffle = Math.random() < 0.5;
-      const whiteId = shuffle ? players[0] : players[1];
-      const blackId = shuffle ? players[1] : players[0];
+      const flip = Math.random() < 0.5;
+      const whiteId = flip ? players[0] : players[1];
+      const blackId = flip ? players[1] : players[0];
       io.to(whiteId).emit('chess-start', { color: 'white' });
       io.to(blackId).emit('chess-start', { color: 'black' });
       if (socketStats[whiteId]) socketStats[whiteId].gamesPlayed++;

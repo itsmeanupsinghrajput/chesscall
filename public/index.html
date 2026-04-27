@@ -24,21 +24,20 @@
       <span class="logo-piece">♟</span>
       <span class="logo-word">Chess<em>Call</em></span>
     </div>
-    <p class="land-sub">Video call with random strangers worldwide.<br/>Challenge them to a game of chess.</p>
+    <p class="land-sub">Random video calls worldwide.<br/>Challenge strangers to chess.</p>
+    <div class="land-features">
+      <div class="feat"><span class="feat-icon">🎥</span><span>Live Video</span></div>
+      <div class="feat"><span class="feat-icon">♟</span><span>Play Chess</span></div>
+      <div class="feat"><span class="feat-icon">💬</span><span>Text Chat</span></div>
+    </div>
     <div class="perm-warn" id="perm-warn" style="display:none">
-      ⚠ Camera & microphone access required
+      ⚠ Camera &amp; microphone access required
     </div>
     <button class="land-btn" id="btn-start" onclick="startApp()">
       <span class="btn-label">Start Talking</span>
       <span class="btn-shine"></span>
     </button>
-    <div class="land-tags">
-      <span>🌍 Worldwide</span>
-      <span class="dot-sep">·</span>
-      <span>No signup</span>
-      <span class="dot-sep">·</span>
-      <span>100% Free</span>
-    </div>
+    <p class="land-legal">By using ChessCall you agree to be 18+. No sign-up required.</p>
   </div>
   <div class="float-pieces">
     <span style="--d:0s;--x:8%;--y:15%">♜</span>
@@ -62,7 +61,7 @@
     </div>
     <div class="tb-controls">
       <button class="ic-btn" id="btn-mic" onclick="toggleMic()" title="Toggle mic">
-        <svg id="mic-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
           <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
           <line x1="12" y1="19" x2="12" y2="23"/>
@@ -81,90 +80,132 @@
   <!-- MAIN LAYOUT -->
   <div class="main-layout">
 
-    <!-- VIDEO SECTION (takes most space) -->
+    <!-- ── VIDEO SECTION ── -->
     <section class="video-section">
-      <!-- Remote video (big) -->
+      <!-- Remote video -->
       <div class="remote-wrap" id="remote-wrap">
         <video id="remote-video" autoplay playsinline></video>
         <div class="stranger-label">Stranger</div>
-        <button class="tap-video-btn" id="tap-video-btn" onclick="tapToPlay()" style="display:none">▶ Tap to see video</button>
+        <button class="tap-video-btn" id="tap-video-btn" onclick="tapToPlay()" style="display:none">▶ Tap to play</button>
+
         <!-- Searching overlay -->
         <div class="searching-ov" id="searching-ov">
-          <div class="search-icon">♟</div>
-          <div class="search-spinner"></div>
+          <div class="search-anim">
+            <span class="search-piece">♟</span>
+            <div class="search-rings">
+              <div class="ring r1"></div>
+              <div class="ring r2"></div>
+              <div class="ring r3"></div>
+            </div>
+          </div>
           <p id="search-msg">Finding someone...</p>
         </div>
+
+        <!-- Local video (PiP) -->
+        <div class="local-wrap">
+          <video id="local-video" autoplay playsinline muted></video>
+          <span class="you-label">You</span>
+        </div>
       </div>
-      <!-- Local video (small, floating) -->
-      <div class="local-wrap" id="local-wrap">
-        <video id="local-video" autoplay playsinline muted></video>
-        <span class="you-label">You</span>
-      </div>
+
       <!-- Controls bar -->
       <div class="vid-controls">
-        <button class="vc next" id="btn-next" onclick="skipStranger()">
-          ⏭ Next
+        <button class="vc skip" id="btn-next" onclick="skipStranger()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="5 4 15 12 5 20"/><line x1="19" y1="4" x2="19" y2="20"/></svg>
+          Next
         </button>
-        <button class="vc chess" id="btn-chess" onclick="inviteChess()" disabled>
-          ♟ Play Chess
+        <button class="vc chess-btn" id="btn-chess" onclick="inviteChess()" disabled>
+          ♟ Chess
         </button>
-        <button class="vc stop" onclick="stopCall()">
-          ✕ Stop
+        <button class="vc stop-btn" onclick="stopCall()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          Stop
         </button>
       </div>
     </section>
 
-    <!-- CHAT SIDEBAR -->
-    <aside class="chat-side">
-      <div class="chat-top">Text Chat</div>
-      <div class="chat-body" id="chat-body">
-        <div class="sys-msg">Connect with a stranger to start chatting 👋</div>
-      </div>
-      <div class="chat-bottom">
-        <input id="chat-in" type="text" placeholder="Message..." maxlength="300"
-          onkeydown="if(event.key==='Enter')sendMsg()"/>
-        <button class="send-btn" onclick="sendMsg()">↑</button>
-      </div>
-    </aside>
+    <!-- ── RIGHT SIDEBAR ── -->
+    <aside class="right-side">
 
-  </div>
+      <!-- Tab bar -->
+      <div class="tab-bar">
+        <button class="tab active" id="tab-chat" onclick="switchTab('chat')">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+          Chat
+        </button>
+        <button class="tab" id="tab-chess" onclick="switchTab('chess')">
+          ♟ Chess
+        </button>
+      </div>
 
-  <!-- ══ CHESS DRAWER (slides up from bottom) ══ -->
-  <div class="chess-drawer" id="chess-drawer">
-    <div class="chess-inner">
-      <!-- Chess header -->
-      <div class="chess-hdr">
-        <span class="chess-hdr-title">♟ Chess</span>
-        <span class="chess-turn-badge" id="chess-turn-badge">—</span>
-        <div class="chess-hdr-btns">
-          <button class="chess-hbtn" onclick="offerDraw()">½ Draw</button>
-          <button class="chess-hbtn danger" onclick="resignGame()">⚑ Resign</button>
-          <button class="chess-hbtn close" onclick="closeChess()">✕</button>
+      <!-- ── CHAT PANEL ── -->
+      <div class="panel" id="panel-chat">
+        <div class="chat-body" id="chat-body">
+          <div class="sys-msg">Connect with a stranger to start chatting 👋</div>
+        </div>
+        <div class="chat-input-row">
+          <input id="chat-in" type="text" placeholder="Type a message..." maxlength="300"
+            onkeydown="if(event.key==='Enter')sendMsg()"/>
+          <button class="send-btn" onclick="sendMsg()">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+          </button>
         </div>
       </div>
-      <!-- Chess body -->
-      <div class="chess-content">
-        <!-- Board -->
-        <div class="board-container">
-          <div class="rank-labels" id="rank-labels"></div>
-          <div class="chess-board" id="chess-board"></div>
-          <div class="file-labels" id="file-labels"></div>
+
+      <!-- ── CHESS PANEL ── -->
+      <div class="panel hidden" id="panel-chess">
+
+        <!-- Idle state (no game) -->
+        <div id="chess-idle" class="chess-idle">
+          <div class="chess-idle-icon">♟</div>
+          <p class="chess-idle-title">No active game</p>
+          <p class="chess-idle-sub">Challenge your stranger to a game of chess!</p>
+          <button class="chess-invite-btn" id="chess-invite-btn2" onclick="inviteChess()" disabled>
+            Challenge Stranger
+          </button>
         </div>
-        <!-- Info panel -->
-        <div class="chess-info-panel">
-          <div class="my-color-box" id="my-color-box">
-            <span class="mcb-label">Playing as</span>
-            <span class="mcb-val" id="my-color-val">—</span>
+
+        <!-- Active game -->
+        <div id="chess-game" class="chess-game hidden">
+
+          <!-- Status row -->
+          <div class="chess-status-row">
+            <div class="color-indicator" id="color-indicator">
+              <span class="ci-label">You play</span>
+              <span class="ci-val" id="my-color-val">—</span>
+            </div>
+            <div class="turn-badge" id="chess-turn-badge">—</div>
           </div>
-          <div class="move-history">
-            <div class="mh-title">Move History</div>
+
+          <!-- Board -->
+          <div class="board-outer">
+            <div class="board-with-ranks">
+              <div class="rank-labels" id="rank-labels"></div>
+              <div class="chess-board" id="chess-board"></div>
+            </div>
+            <div class="file-row">
+              <div class="file-spacer"></div>
+              <div class="file-labels" id="file-labels"></div>
+            </div>
+          </div>
+
+          <!-- Move history -->
+          <div class="move-history-box">
+            <div class="mh-header">Move History</div>
             <div class="mh-list" id="mh-list"></div>
           </div>
-        </div>
-      </div>
-    </div>
-  </div>
 
+          <!-- Action buttons -->
+          <div class="chess-actions">
+            <button class="ca-btn" onclick="offerDraw()">½ Draw</button>
+            <button class="ca-btn danger" onclick="resignGame()">⚑ Resign</button>
+          </div>
+
+        </div><!-- end chess-game -->
+      </div><!-- end panel-chess -->
+
+    </aside>
+  </div><!-- end main-layout -->
 </div><!-- end screen-call -->
 
 <!-- ══════ MODALS ══════ -->
@@ -172,10 +213,10 @@
   <div class="modal-box">
     <div class="m-icon">♟</div>
     <div class="m-title">Chess Challenge!</div>
-    <div class="m-text">Your stranger wants to play chess. Do you accept?</div>
+    <div class="m-text">Your stranger wants to play chess. Accept?</div>
     <div class="m-actions">
       <button class="m-yes" onclick="respondChess(true)">✓ Accept</button>
-      <button class="m-no" onclick="respondChess(false)">✕ Decline</button>
+      <button class="m-no"  onclick="respondChess(false)">✕ Decline</button>
     </div>
   </div>
 </div>
@@ -184,10 +225,10 @@
   <div class="modal-box">
     <div class="m-icon">½</div>
     <div class="m-title">Draw Offered</div>
-    <div class="m-text">Your opponent offers a draw.</div>
+    <div class="m-text">Your opponent is offering a draw.</div>
     <div class="m-actions">
       <button class="m-yes" onclick="respondDraw(true)">✓ Accept</button>
-      <button class="m-no" onclick="respondDraw(false)">✕ Decline</button>
+      <button class="m-no"  onclick="respondDraw(false)">✕ Decline</button>
     </div>
   </div>
 </div>
@@ -203,7 +244,7 @@
   </div>
 </div>
 
-<!-- Toast notification -->
+<!-- Toast -->
 <div class="toast" id="toast"></div>
 
 <script src="client.js"></script>
